@@ -10,7 +10,7 @@ import {
 } from "../../api/authentication/getUserInfoByAuthCode";
 import { getDevicesByUsername, type SmartBuildingDeviceRecord } from "../services/deviceSync";
 import { extractCameraToken, extractCameraUIDs, MINIAPP_DEVICES_REFRESH_EVENT } from "../utils/cameraFlow";
-import { labelForCameraUid } from "../lib/homeCamera";
+import { isHomeCameraDevice, labelForCameraUid } from "../lib/homeCamera";
 import { ZYAPP_CAMERA_TOKEN_STORAGE_KEY } from "../lib/storageKeys";
 import { tbWsManager } from "../lib/tbWebSocket";
 
@@ -128,8 +128,19 @@ function mergeDevicesByDeviceId(
   return Array.from(map.values());
 }
 
+function inferCameraUIDs(devices: SmartBuildingDeviceRecord[]): string[] {
+  const knownCameraUIDs = new Set<string>();
+  return devices
+    .filter((device) => isHomeCameraDevice(device, knownCameraUIDs))
+    .map((device) => String(device.deviceId ?? device.device?.id?.id ?? "").trim())
+    .filter(Boolean);
+}
+
 interface MiniAppState {
   userPhone: string;
+  accessToken: string;
+  refreshToken: string;
+  mqttToken: string;
   cameraToken: string;
   cameraUIDs: string[];
   devices: SmartBuildingDeviceRecord[];
@@ -156,6 +167,9 @@ interface MiniAppContextValue extends MiniAppState {
 
 const initialState: MiniAppState = {
   userPhone: typeof window !== "undefined" ? (window.MINIAPP_USER_PHONE ?? "") : "",
+  accessToken: "",
+  refreshToken: "",
+  mqttToken: "",
   cameraToken: "",
   cameraUIDs: [],
   devices: [],
@@ -208,17 +222,29 @@ export function MiniAppProvider({ children }: { children: React.ReactNode }) {
 
   const setDevices = useCallback((devices: SmartBuildingDeviceRecord[]) => {
     const merged = mergeDevicesByDeviceId(devices, lastIotDevicesRef.current);
-    setState((s) => ({ ...s, devices: merged }));
+    const inferredCameraUIDs = inferCameraUIDs(merged);
+    setState((s) => ({
+      ...s,
+      devices: merged,
+      cameraUIDs:
+        s.cameraUIDs.length > 0
+          ? Array.from(new Set([...s.cameraUIDs, ...inferredCameraUIDs]))
+          : inferredCameraUIDs,
+    }));
   }, []);
 
-  /** Cập nhật cameraToken / cameraUIDs / phone / devices / session từ payload oauth/user-info. */
+  /** Cập nhật token, phone, camera và devices từ payload exchange-tammi. */
   const applyUserInfoFromOAuthResponse = useCallback(
     async (info: UserInfoResponse) => {
       const phone = getPhoneFromUserInfo(info);
+      const accessToken = String(info.access_token ?? "").trim();
+      const refreshToken = String(info.refresh_token ?? "").trim();
+      const mqttToken = String(info.mqttToken ?? "").trim();
       const camToken = extractCameraToken(info);
       const camUIDs = extractCameraUIDs(info);
       const iotDevices = extractIotDevicesFromUserInfo(info);
       lastIotDevicesRef.current = iotDevices;
+      setState((s) => ({ ...s, accessToken, refreshToken, mqttToken }));
       addLog(
         "[userinfo]",
         "response",
@@ -232,7 +258,10 @@ export function MiniAppProvider({ children }: { children: React.ReactNode }) {
       if (camToken || camUIDs.length > 0) {
         setState((s) => ({ ...s, cameraToken: camToken, cameraUIDs: camUIDs }));
         try {
-          sessionStorage.setItem(ZYAPP_CAMERA_TOKEN_STORAGE_KEY, JSON.stringify(info));
+          sessionStorage.setItem(
+            ZYAPP_CAMERA_TOKEN_STORAGE_KEY,
+            JSON.stringify({ cameraToken: camToken, cameraUIDs: camUIDs }),
+          );
         } catch {}
       }
 
@@ -304,7 +333,7 @@ export function MiniAppProvider({ children }: { children: React.ReactNode }) {
       return { ...s, sessionResyncLoading: true };
     });
     try {
-      const auth = await getAuthCode(["USER_NAME", "USER_EMAIL"]);
+      const auth = await getAuthCode(["USER_NAME", "USER_PHONE_NUMBER"]);
       const info = await getUserInfoByAuthCode(auth.authCode);
       await applyUserInfoFromOAuthResponse(info);
     } catch {
@@ -332,7 +361,7 @@ export function MiniAppProvider({ children }: { children: React.ReactNode }) {
   }, [state.sessionResyncLoading]);
 
   /**
-   * Sau khi đóng SDK / quay lại WebView: gọi lại oauth/user-info (getAuthCode + POST user-info), rồi đồng bộ camera + devices.
+   * Sau khi đóng SDK / quay lại WebView: lấy authCode mới, exchange token, rồi đồng bộ camera + devices.
    * Ngoài ra vẫn bắt event từ JSAPI makeCallFromCamera settle.
    */
   useEffect(() => {
@@ -393,7 +422,7 @@ export function MiniAppProvider({ children }: { children: React.ReactNode }) {
   const requestAuthAndPhone = useCallback(async () => {
     setState((s) => ({ ...s, authLoading: true, authError: "" }));
     try {
-      const auth = await getAuthCode(["USER_NAME", "USER_EMAIL"]);
+      const auth = await getAuthCode(["USER_NAME", "USER_PHONE_NUMBER"]);
       const info = await getUserInfoByAuthCode(auth.authCode);
       await applyUserInfoFromOAuthResponse(info);
     } catch (e: unknown) {

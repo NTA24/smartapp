@@ -108,8 +108,10 @@ export function extractCameraToken(payload: unknown): string {
   const p = payload as Record<string, unknown>;
   const candidates = [
     p.cameraToken,
+    p.zyToken,
     p.token,
     (p.data as Record<string, unknown> | undefined)?.cameraToken,
+    (p.data as Record<string, unknown> | undefined)?.zyToken,
     (p.data as Record<string, unknown> | undefined)?.token,
     (p.result as Record<string, unknown> | undefined)?.cameraToken,
     (p.result as Record<string, unknown> | undefined)?.token,

@@ -46,10 +46,13 @@ export function getApiBase(): string {
   return isSameOrigin ? "/api" : PUBLIC_API_BASE;
 }
 
+export function getTammiExchangeUrl(): string {
+  return `${getApiBase().replace(/\/+$/, "")}/exchange-tammi`;
+}
+
 export const DEFAULT_SCOPES = ["USER_NAME", "USER_PHONE_NUMBER"] as const;
 export const SMART_BUILDING_BASE_URL = CAMPUS_API_BASE;
 export const NEWGEN_DEVICE_WITH_CREDENTIALS_URL = `${NEWGEN_API_BASE}/device-with-credentials`;
-export const USER_INFO_URL = `${CAMPUS_API_BASE}/oauth/user-info`;
 
 export const NEWGEN_SAMPLE_CUSTOMER_ID = "e08bac50-2dd5-11f1-818c-272cb13706a3";
 

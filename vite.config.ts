@@ -1,6 +1,6 @@
 import type { ViteDevServer } from 'vite'
 import type { IncomingMessage, ServerResponse } from 'http'
-import { defineConfig } from 'vite'
+import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 
 // Ensure .wasm served with correct MIME during dev (decoder resource loading)
@@ -19,6 +19,29 @@ function wasmMimePlugin() {
 }
 
 // https://vite.dev/config/
-export default defineConfig({
-  plugins: [react(), wasmMimePlugin()],
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, process.cwd(), '')
+  const tammiExchangeUrl =
+    env.NEWGEN_TAMMI_EXCHANGE_URL ||
+    'https://api.newgenjsc.com/auth/api/v1/exchange-tammi'
+  const tammiExchangeTarget = new URL(tammiExchangeUrl)
+  const serviceAuth = env.NEWGEN_SERVICE_AUTH || ''
+
+  return {
+    plugins: [react(), wasmMimePlugin()],
+    server: {
+      proxy: {
+        '/api/exchange-tammi': {
+          target: tammiExchangeTarget.origin,
+          changeOrigin: true,
+          rewrite: () => `${tammiExchangeTarget.pathname}${tammiExchangeTarget.search}`,
+          configure(proxy) {
+            proxy.on('proxyReq', (proxyReq) => {
+              if (serviceAuth) proxyReq.setHeader('X-Service-Auth', serviceAuth)
+            })
+          },
+        },
+      },
+    },
+  }
 })
