@@ -22,8 +22,11 @@ function wasmMimePlugin() {
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   const tammiExchangeUrl =
-    env.NEWGEN_TAMMI_EXCHANGE_URL ||
-    'https://api.newgenjsc.com/auth/api/v1/exchange-tammi'
+    env.NEWGEN_SERVICE_AUTH
+      ? env.NEWGEN_TAMMI_EXCHANGE_URL ||
+        'https://stg-api.newgenjsc.com/auth/api/v1/exchange-tammi'
+      : env.NEWGEN_TAMMI_LEGACY_URL ||
+        'https://campus.iot-platform.io.vn/api/v1/mini-app/oauth/user-info'
   const tammiExchangeTarget = new URL(tammiExchangeUrl)
   const serviceAuth = env.NEWGEN_SERVICE_AUTH || ''
 

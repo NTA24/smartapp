@@ -7,6 +7,7 @@ import {
 import { addLog } from "../debugLog";
 import {
   getCachedLoginJwt,
+  hasTbLoginCredentials,
   isJwtExpired,
   rejectCachedLoginJwt,
   tbLogin,
@@ -335,6 +336,7 @@ export class TbWsManager {
     const envJwt = getNewgenWsJwt();
     const cached = getCachedLoginJwt();
     const apiKey = getNewgenSampleDevicesApiKey();
+    const hasLoginCredentials = hasTbLoginCredentials();
 
     let token = "";
     if (envJwt && !isJwtExpired(envJwt)) {
@@ -342,7 +344,7 @@ export class TbWsManager {
     } else if (cached && !isJwtExpired(cached)) {
       token = cached;
     } else {
-      const fresh = await tbLogin();
+      const fresh = hasLoginCredentials ? await tbLogin() : null;
       if (fresh) {
         token = fresh;
       } else if (apiKey) {
@@ -351,8 +353,13 @@ export class TbWsManager {
     }
 
     if (!token) {
-      addLog("[ws]", "No valid token available — cannot connect WS");
       this.connecting = false;
+      if (!envJwt && !apiKey && !hasLoginCredentials) {
+        this.wsAuthFatal = true;
+        addLog("[ws]", "WS disabled: missing JWT, TB credentials, and API key");
+        return;
+      }
+      addLog("[ws]", "No valid token available: cannot connect WS");
       if (this.subs.size > 0) this.scheduleReconnect();
       return;
     }

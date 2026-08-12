@@ -12,7 +12,6 @@ import { getDevicesByUsername, type SmartBuildingDeviceRecord } from "../service
 import { extractCameraToken, extractCameraUIDs, MINIAPP_DEVICES_REFRESH_EVENT } from "../utils/cameraFlow";
 import { isHomeCameraDevice, labelForCameraUid } from "../lib/homeCamera";
 import { ZYAPP_CAMERA_TOKEN_STORAGE_KEY } from "../lib/storageKeys";
-import { tbWsManager } from "../lib/tbWebSocket";
 
 const RESYNC_LOADING_MAX_MS = 12_000;
 const AUTH_RESUME_EVENT_SUPPRESS_MS = 1_500;
@@ -179,7 +178,7 @@ const initialState: MiniAppState = {
   authModalVisible: false,
   authLoading: false,
   authError: "",
-  miniAppInitialized: true,
+  miniAppInitialized: false,
   sessionResyncLoading: false,
 };
 
@@ -207,16 +206,13 @@ export function MiniAppProvider({ children }: { children: React.ReactNode }) {
   }));
 
   const didRequestRef = useRef(false);
-  const miniAppInitializedRef = useRef(true);
+  const miniAppInitializedRef = useRef(false);
   miniAppInitializedRef.current = state.miniAppInitialized;
   const resyncLabelSnapshotRef = useRef("");
   const lastIotDevicesRef = useRef<SmartBuildingDeviceRecord[]>([]);
   const oauthRequestInFlightRef = useRef<Promise<void> | null>(null);
+  const oauthAuthenticatedRef = useRef(false);
   const suppressResumeRefreshUntilRef = useRef(0);
-
-  useEffect(() => {
-    tbWsManager.ensureConnected();
-  }, []);
 
   const setUserPhone = useCallback((phone: string) => {
     setState((s) => ({ ...s, userPhone: phone }));
@@ -314,7 +310,17 @@ export function MiniAppProvider({ children }: { children: React.ReactNode }) {
     const request = (async () => {
       const auth = await getAuthCode(["USER_NAME", "USER_PHONE_NUMBER"]);
       const info = await getUserInfoByAuthCode(auth.authCode);
+      const accessToken = String(info.access_token ?? "").trim();
+      const phone = getPhoneFromUserInfo(info);
+      const cameraToken = extractCameraToken(info);
+      if (!accessToken && !cameraToken) {
+        throw new Error("Login response did not return an access token or camera token");
+      }
+      if (!phone) {
+        throw new Error("exchange-tammi did not return a phone number. Phone permission is required.");
+      }
       await applyUserInfoFromOAuthResponse(info);
+      oauthAuthenticatedRef.current = true;
     })().finally(() => {
       suppressResumeRefreshUntilRef.current = Date.now() + AUTH_RESUME_EVENT_SUPPRESS_MS;
       oauthRequestInFlightRef.current = null;
@@ -359,7 +365,8 @@ export function MiniAppProvider({ children }: { children: React.ReactNode }) {
     });
     try {
       await fetchAndApplyOAuthUserInfo();
-    } catch {
+    } catch (error) {
+      addLog("[auth]", "resume-refresh-failed", error instanceof Error ? error.message : String(error));
       await refreshDevices();
     }
   }, [fetchAndApplyOAuthUserInfo, refreshDevices]);
@@ -384,11 +391,12 @@ export function MiniAppProvider({ children }: { children: React.ReactNode }) {
   }, [state.sessionResyncLoading]);
 
   /**
-   * Sau khi đóng SDK / quay lại WebView: lấy authCode mới, exchange token, rồi đồng bộ camera + devices.
-   * Ngoài ra vẫn bắt event từ JSAPI makeCallFromCamera settle.
+   * Chỉ đồng bộ lại sau khi native add-device flow kết thúc.
+   * Không dùng focus/visibility để gọi lại OAuth vì Super App có thể phát
+   * các event này trong lúc hiện permission sheet, gây exchange lặp.
    */
   useEffect(() => {
-    if (typeof window === "undefined" || typeof document === "undefined") return;
+    if (typeof window === "undefined") return;
 
     const DEBOUNCE_MS = 400;
     let debounceId: number | null = null;
@@ -397,6 +405,7 @@ export function MiniAppProvider({ children }: { children: React.ReactNode }) {
       debounceId = window.setTimeout(() => {
         debounceId = null;
         if (!miniAppInitializedRef.current) return;
+        if (!oauthAuthenticatedRef.current) return;
         if (oauthRequestInFlightRef.current) return;
         if (Date.now() < suppressResumeRefreshUntilRef.current) return;
         void refreshOAuthUserInfoRef.current();
@@ -408,62 +417,40 @@ export function MiniAppProvider({ children }: { children: React.ReactNode }) {
     };
     window.addEventListener(MINIAPP_DEVICES_REFRESH_EVENT, onRefreshEvent);
 
-    let wasHidden = document.visibilityState === "hidden";
-    const onVisibility = () => {
-      const hidden = document.visibilityState === "hidden";
-      if (!hidden && wasHidden) schedule();
-      wasHidden = hidden;
-    };
-    document.addEventListener("visibilitychange", onVisibility);
-
-    let shellBlurred = false;
-    const onBlur = () => {
-      shellBlurred = true;
-    };
-    const onFocus = () => {
-      if (shellBlurred) {
-        shellBlurred = false;
-        schedule();
-      }
-    };
-    window.addEventListener("blur", onBlur);
-    window.addEventListener("focus", onFocus);
-
-    const onPageShow = (ev: PageTransitionEvent) => {
-      if (ev.persisted) schedule();
-    };
-    window.addEventListener("pageshow", onPageShow);
-
     return () => {
       window.removeEventListener(MINIAPP_DEVICES_REFRESH_EVENT, onRefreshEvent);
-      document.removeEventListener("visibilitychange", onVisibility);
-      window.removeEventListener("blur", onBlur);
-      window.removeEventListener("focus", onFocus);
-      window.removeEventListener("pageshow", onPageShow);
       if (debounceId !== null) window.clearTimeout(debounceId);
     };
   }, []);
 
   const requestAuthAndPhone = useCallback(async () => {
-    setState((s) => ({ ...s, authLoading: true, authError: "" }));
+    setState((s) => ({
+      ...s,
+      authLoading: true,
+      authError: "",
+      miniAppInitialized: false,
+    }));
     try {
       await fetchAndApplyOAuthUserInfo();
+      setState((s) => ({ ...s, authModalVisible: false }));
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       setState((s) => ({ ...s, authError: msg || "Auth flow failed" }));
       throw e;
     } finally {
-      setState((s) => ({ ...s, authLoading: false }));
+      setState((s) => ({ ...s, authLoading: false, miniAppInitialized: true }));
     }
   }, [fetchAndApplyOAuthUserInfo]);
 
   const initializeMiniApp = useCallback(async (): Promise<void> => {
+    addLog("[auth]", "waiting-for-windvane");
     await onWindVaneReady();
 
     if (!window.WindVane?.call) {
-      setState((s) => ({ ...s, authModalVisible: false }));
-      return;
+      addLog("[auth]", "windvane-unavailable");
+      throw new Error("WindVane is unavailable. Open this miniapp inside the Super App.");
     }
+    addLog("[auth]", "windvane-ready");
 
     const current = getMiniAppAppId();
     if (!current || current.trim() === "") {
@@ -484,7 +471,16 @@ export function MiniAppProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    void initializeMiniApp().catch(() => {});
+    void initializeMiniApp().catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      addLog("[auth]", "initialize-failed", message);
+      setState((s) => ({
+        ...s,
+        authLoading: false,
+        authError: message || "Auth flow failed",
+        miniAppInitialized: true,
+      }));
+    });
     return undefined;
   }, [initializeMiniApp]);
 

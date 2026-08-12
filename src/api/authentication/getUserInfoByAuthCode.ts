@@ -1,7 +1,8 @@
-import { getTammiExchangeUrl } from "../../miniapp/lib/config";
-import { addLog, clearLogs } from "../../miniapp/lib/debugLog";
+import { getLegacyUserInfoUrl, getTammiExchangeUrl } from "../../miniapp/lib/config";
+import { addLog } from "../../miniapp/lib/debugLog";
 
 const USER_INFO_LOG_MAX = 14_000;
+const EXCHANGE_TIMEOUT_MS = 20_000;
 
 function jsonForUserInfoDebugLog(value: unknown, max = USER_INFO_LOG_MAX): string {
   try {
@@ -75,6 +76,14 @@ function firstNumber(...values: unknown[]): number | undefined {
   return undefined;
 }
 
+function phoneLikeString(value: unknown): string {
+  if (typeof value !== "string" && typeof value !== "number") return "";
+  const normalized = String(value).trim();
+  if (!normalized || !/^\+?[\d\s().-]+$/.test(normalized)) return "";
+  const digits = normalized.replace(/\D/g, "");
+  return digits.length >= 9 && digits.length <= 15 ? normalized : "";
+}
+
 function mergeResponseRecords(envelope: Record<string, unknown>): Record<string, unknown> {
   const layers = [envelope];
   let current = envelope;
@@ -96,6 +105,12 @@ function pickErrorMessage(data: unknown): string {
   if (typeof error?.message === "string") return error.message;
   if (typeof error?.code === "string") return error.code;
   return "";
+}
+
+function pickErrorCode(data: unknown): string {
+  const record = asRecord(data);
+  const error = asRecord(record?.error);
+  return firstString(record?.code, error?.code);
 }
 
 function parseUserInfoResponse(data: unknown): UserInfoResponse {
@@ -150,7 +165,6 @@ function parseUserInfoResponse(data: unknown): UserInfoResponse {
     userRecord?.mobile,
     userRecord?.mobileNumber,
     userRecord?.mobile_number,
-    userRecord?.username,
   );
   const phoneNumber = firstString(
     record.phoneNumber,
@@ -224,31 +238,51 @@ export function getPhoneFromUserInfo(data: UserInfoResponse): string {
     data.user?.phone,
     data.user?.phoneNumber,
     data.user?.msisdn,
-    data.username,
   ];
   for (const value of candidates) {
-    const normalized = String(value ?? "").trim();
-    if (normalized) return normalized;
+    const phone = phoneLikeString(value);
+    if (phone) return phone;
   }
-  return "";
+  return phoneLikeString(data.username) || phoneLikeString(data.user?.username);
 }
 
 export async function getUserInfoByAuthCode(authCode: string): Promise<UserInfoResponse> {
-  const res = await fetch(getTammiExchangeUrl(), {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-    body: JSON.stringify({ authCode }),
-  });
+  const requestUserInfo = async (url: string): Promise<{ res: Response; data: unknown }> => {
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), EXCHANGE_TIMEOUT_MS);
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify({ authCode }),
+        signal: controller.signal,
+      });
+    } catch (error) {
+      if (controller.signal.aborted) {
+        throw new Error("exchange-tammi timeout");
+      }
+      throw error;
+    } finally {
+      window.clearTimeout(timeoutId);
+    }
 
-  let data: unknown = null;
-  try {
-    data = await res.json();
-  } catch {}
+    let data: unknown = null;
+    try {
+      data = await res.json();
+    } catch {}
+    return { res, data };
+  };
 
-  clearLogs();
+  let { res, data } = await requestUserInfo(getTammiExchangeUrl());
+  if (pickErrorCode(data) === "SERVER_MISCONFIGURED") {
+    addLog("[userinfo]", "proxy-misconfigured-fallback", "legacy-campus");
+    ({ res, data } = await requestUserInfo(getLegacyUserInfoUrl()));
+  }
+
   addLog("[userinfo]", "response", jsonForUserInfoDebugLog(data));
 
   if (!res.ok) {
@@ -263,6 +297,7 @@ export async function getUserInfoByAuthCode(authCode: string): Promise<UserInfoR
   }
 
   const parsed = parseUserInfoResponse(data);
+  const phone = getPhoneFromUserInfo(parsed);
   addLog(
     "[userinfo]",
     "normalized",
@@ -271,7 +306,7 @@ export async function getUserInfoByAuthCode(authCode: string): Promise<UserInfoR
       accessTokenLength: parsed.access_token?.length ?? 0,
       hasRefreshToken: Boolean(parsed.refresh_token),
       refreshTokenLength: parsed.refresh_token?.length ?? 0,
-      hasPhone: Boolean(getPhoneFromUserInfo(parsed)),
+      hasPhone: Boolean(phone),
       hasMqttToken: Boolean(parsed.mqttToken),
       hasCameraToken: Boolean(parsed.cameraToken),
     }),

@@ -11,6 +11,10 @@ let _loginBlockedUntil = 0;
 
 const LOGIN_RETRY_COOLDOWN_MS = 60_000;
 
+export function hasTbLoginCredentials(): boolean {
+  return Boolean(getNewgenTbUsername() && getNewgenTbPassword());
+}
+
 export function isJwtExpired(jwt: string): boolean {
   try {
     const parts = jwt.split(".");

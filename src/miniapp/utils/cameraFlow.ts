@@ -66,7 +66,9 @@ export function callMakeCallFromCamera(
       },
     );
   }).finally(() => {
-    requestMiniAppDeviceListRefresh("makeCallFromCamera:settled");
+    if (typeView === "ADDDEVICES") {
+      requestMiniAppDeviceListRefresh("makeCallFromCamera:add-devices-settled");
+    }
   });
 }
 

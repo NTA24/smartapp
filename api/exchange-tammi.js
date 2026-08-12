@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
 
 const DEFAULT_EXCHANGE_URL =
-  "https://api.newgenjsc.com/auth/api/v1/exchange-tammi";
+  "https://stg-api.newgenjsc.com/auth/api/v1/exchange-tammi";
+const DEFAULT_LEGACY_EXCHANGE_URL =
+  "https://campus.iot-platform.io.vn/api/v1/mini-app/oauth/user-info";
+const EXCHANGE_TIMEOUT_MS = 20_000;
 
 function setCorsHeaders(req, res) {
   const origin = String(req.headers.origin ?? "").trim();
@@ -44,12 +47,6 @@ export default async function handler(req, res) {
   }
 
   const serviceAuth = String(process.env.NEWGEN_SERVICE_AUTH ?? "").trim();
-  if (!serviceAuth) {
-    return res.status(500).json({
-      data: null,
-      error: { code: "SERVER_MISCONFIGURED", message: "Missing NEWGEN_SERVICE_AUTH" },
-    });
-  }
 
   const body = readBody(req);
   const authCode = String(body.authCode ?? "").trim();
@@ -61,10 +58,14 @@ export default async function handler(req, res) {
   }
 
   const exchangeUrl = String(
-    process.env.NEWGEN_TAMMI_EXCHANGE_URL ?? DEFAULT_EXCHANGE_URL,
+    serviceAuth
+      ? process.env.NEWGEN_TAMMI_EXCHANGE_URL ?? DEFAULT_EXCHANGE_URL
+      : process.env.NEWGEN_TAMMI_LEGACY_URL ?? DEFAULT_LEGACY_EXCHANGE_URL,
   ).trim();
   const requestId =
     String(req.headers["x-request-id"] ?? "").trim() || randomUUID();
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), EXCHANGE_TIMEOUT_MS);
 
   try {
     const upstream = await fetch(exchangeUrl, {
@@ -73,9 +74,10 @@ export default async function handler(req, res) {
         Accept: "application/json",
         "Content-Type": "application/json",
         "X-Request-Id": requestId,
-        "X-Service-Auth": serviceAuth,
+        ...(serviceAuth ? { "X-Service-Auth": serviceAuth } : {}),
       },
       body: JSON.stringify({ authCode }),
+      signal: controller.signal,
     });
 
     const text = await upstream.text();
@@ -94,12 +96,17 @@ export default async function handler(req, res) {
 
     return res.status(upstream.status).json(payload);
   } catch (error) {
-    return res.status(502).json({
+    const timedOut = controller.signal.aborted;
+    return res.status(timedOut ? 504 : 502).json({
       data: null,
       error: {
-        code: "UPSTREAM_UNAVAILABLE",
-        message: error instanceof Error ? error.message : String(error),
+        code: timedOut ? "UPSTREAM_TIMEOUT" : "UPSTREAM_UNAVAILABLE",
+        message: timedOut
+          ? "Staging exchange timed out"
+          : error instanceof Error ? error.message : String(error),
       },
     });
+  } finally {
+    clearTimeout(timeoutId);
   }
 }

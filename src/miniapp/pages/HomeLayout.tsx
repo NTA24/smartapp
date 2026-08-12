@@ -1,14 +1,14 @@
 import React, { useState } from "react";
-import { Typography } from "antd";
+import { Alert, Button, Typography } from "antd";
 import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
-import { MenuOutlined, SettingOutlined, SearchOutlined } from "@ant-design/icons";
+import { MenuOutlined, ReloadOutlined, SettingOutlined, SearchOutlined } from "@ant-design/icons";
 import { useMiniApp } from "../context/MiniAppContext";
 import { formatPhone } from "../utils/phone";
 
 export const HomeLayout: React.FC = () => {
   const [menuOpen, setMenuOpen] = useState(false);
-  const { userPhone } = useMiniApp();
+  const { userPhone, authError, authLoading, requestAuthAndPhone } = useMiniApp();
   const location = useLocation();
 
   return (
@@ -21,12 +21,38 @@ export const HomeLayout: React.FC = () => {
           <Typography.Text type="secondary" className="home-page__user-phone">
             {formatPhone(userPhone)}
           </Typography.Text>
+        ) : authError ? (
+          <Typography.Text type="danger" className="home-page__user-phone">
+            Chưa đăng nhập
+          </Typography.Text>
         ) : (
           <Typography.Text type="secondary" italic className="home-page__user-phone">
             Đang đăng nhập…
           </Typography.Text>
         )}
       </div>
+
+      {authError ? (
+        <Alert
+          type="error"
+          showIcon
+          message="Không thể đăng nhập"
+          description={authError}
+          action={
+            <Button
+              size="small"
+              icon={<ReloadOutlined />}
+              loading={authLoading}
+              onClick={() => {
+                void requestAuthAndPhone().catch(() => {});
+              }}
+            >
+              Thử lại
+            </Button>
+          }
+          style={{ margin: "0 16px 12px" }}
+        />
+      ) : null}
 
       <div className="home-page__tabs home-page__tabs--framer">
         <NavLink to="/" end className="home-page__tab-cell">

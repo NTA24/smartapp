@@ -2,6 +2,7 @@ import { getApiBase, getMiniAppAppId, DEFAULT_SCOPES } from "../lib/config";
 import { getAuthCode as apiGetAuthCode } from "../../api/authentication/getAuthCode";
 import { authorize } from "../../api/permissions/authorize";
 import { getLocation } from "../../api/location/getLocation";
+import { addLog } from "../lib/debugLog";
 const WV_READY_TIMEOUT_MS = 10_000;
 const LAST_AUTH_CODE_KEY = "miniapp_last_auth_code";
 
@@ -60,23 +61,36 @@ if (typeof window !== "undefined") {
 export function onWindVaneReady(): Promise<void> {
   if (_wvReady) return Promise.resolve();
 
-  return new Promise<void>((resolve) => {
+  return new Promise<void>((resolve, reject) => {
     if (isWindVaneReady()) {
       notifyWvReady();
       return resolve();
     }
 
     let done = false;
+    let timer: number | undefined;
+    const removeListener = () => {
+      const index = _wvListeners.indexOf(finish);
+      if (index >= 0) _wvListeners.splice(index, 1);
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
     const finish = () => {
       if (done) return;
       done = true;
+      removeListener();
       resolve();
+    };
+    const fail = () => {
+      if (done) return;
+      done = true;
+      removeListener();
+      reject(new Error("WindVane is unavailable. Open this miniapp inside the Super App."));
     };
 
     _wvListeners.push(finish);
 
-    setTimeout(() => {
-      if (!done) finish();
+    timer = window.setTimeout(() => {
+      if (!done) fail();
     }, WV_READY_TIMEOUT_MS);
   });
 }
@@ -91,19 +105,22 @@ function errorMessage(err: unknown): string {
   return String(err ?? "");
 }
 
-async function ensurePermissions(scopes: string[]): Promise<void> {
+async function requestLocationBestEffort(): Promise<void> {
   try {
-    await authorize("location");
-  } catch {}
+    const result = await authorize("location");
+    addLog("[auth]", "location-authorize-ok", JSON.stringify(result ?? {}));
+  } catch (error) {
+    addLog("[auth]", "location-authorize-failed", errorMessage(error));
+  }
 
   try {
-    await getLocation({});
-  } catch {}
-
-  for (const scope of scopes) {
-    try {
-      await authorize(scope);
-    } catch {}
+    const result = await getLocation({ enableHighAccuracy: "false" });
+    addLog("[auth]", "location-get-ok", JSON.stringify({
+      hasCoords: Boolean(result?.coords),
+      hasAddress: Boolean(result?.address),
+    }));
+  } catch (error) {
+    addLog("[auth]", "location-get-failed", errorMessage(error));
   }
 }
 
@@ -119,74 +136,55 @@ function getFallbackScopes(scopes: string[]): string[] {
   return requiresPhone ? PHONE_FALLBACK_SCOPES : BASIC_FALLBACK_SCOPES;
 }
 
-async function getAuthCodeWithRetry(
+async function requestAuthCode(
   scopes: string[],
-  attempt = 0
 ): Promise<{ authCode: string; scopes: string[] }> {
+  await onWindVaneReady();
+  if (!isWindVaneReady()) {
+    throw new Error("WindVane chưa sẵn sàng");
+  }
+
+  const appId = getMiniAppAppId();
+  if (!appId) {
+    throw new Error("appId đang rỗng");
+  }
+
+  await requestLocationBestEffort();
+
   try {
-    await onWindVaneReady();
-    if (!isWindVaneReady()) {
-      throw new Error("WindVane chưa sẵn sàng");
-    }
+    const first = await tryGetAuthCode(appId, scopes);
+    saveLastAuthCode(first.authCode);
+    return first;
+  } catch (firstErr: unknown) {
+    const firstMsg = errorMessage(firstErr);
+    const isLocationOrConsentError =
+      /no location permission|No consent data available|consent|HY_FAILED/i.test(firstMsg);
 
-    const appId = getMiniAppAppId();
-    if (!appId) {
-      throw new Error("appId đang rỗng");
-    }
-
-    await ensurePermissions(scopes);
-
-    try {
-      const first = await tryGetAuthCode(appId, scopes);
-      saveLastAuthCode(first.authCode);
-      return first;
-    } catch (firstErr: unknown) {
-      const firstMsg = errorMessage(firstErr);
-      const isLocationOrConsentError =
-        /no location permission|No consent data available|consent|HY_FAILED/i.test(firstMsg);
-
-      if (isLocationOrConsentError) {
-        await ensurePermissions(scopes);
+    if (isLocationOrConsentError) {
+      const fallbackScopes = getFallbackScopes(scopes);
+      const usedFallback =
+        fallbackScopes.length !== scopes.length ||
+        fallbackScopes.some((scope, index) => scope !== scopes[index]);
+      if (usedFallback) {
         try {
-          const second = await tryGetAuthCode(appId, scopes);
-          saveLastAuthCode(second.authCode);
-          return second;
+          const fallback = await tryGetAuthCode(appId, fallbackScopes);
+          saveLastAuthCode(fallback.authCode);
+          return fallback;
         } catch {
-          const fallbackScopes = getFallbackScopes(scopes);
-          const usedFallback =
-            fallbackScopes.length !== scopes.length ||
-            fallbackScopes.some((scope, index) => scope !== scopes[index]);
-          if (usedFallback) {
-            try {
-              await ensurePermissions(fallbackScopes);
-              const fallback = await tryGetAuthCode(appId, fallbackScopes);
-              saveLastAuthCode(fallback.authCode);
-              return fallback;
-            } catch {
-              /* fall through */
-            }
-          }
-          throw new Error(
-            "Chưa có quyền truy cập (No consent data available). Vui lòng vào Tammi → Cài đặt → Quyền Mini App → bật Vị trí và Số điện thoại cho app này, rồi mở lại và bấm Cho phép."
-          );
+          /* fall through */
         }
       }
-      throw firstErr;
+      throw new Error(
+        "Chưa có quyền truy cập. Hãy bật Vị trí và Số điện thoại trong quyền Mini App của Super App.",
+      );
     }
-  } catch (err) {
-    const msg = errorMessage(err);
-    const isNotReady = msg.includes("WindVane") && (msg.includes("not available") || msg.includes("chưa sẵn sàng"));
-    if (isNotReady && attempt < 3) {
-      await new Promise<void>((r) => setTimeout(r, 400));
-      return getAuthCodeWithRetry(scopes, attempt + 1);
-    }
-    throw err;
+    throw firstErr;
   }
 }
 
 
 export function getAuthCode(scopes: string[] = [...DEFAULT_SCOPES]): Promise<{ authCode: string; scopes: string[] }> {
-  return getAuthCodeWithRetry(scopes, 0);
+  return requestAuthCode(scopes);
 }
 
 export interface SuperAppLoginResult {

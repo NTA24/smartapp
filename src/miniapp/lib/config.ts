@@ -5,6 +5,8 @@ export const DEFAULT_MINIAPP_APP_ID = "1512032299590111735808";
 const DEFAULT_SMARTAPP_HOSTNAME = "smartapp-ten.vercel.app";
 const DEFAULT_PUBLIC_API_BASE = "https://smartapp-ten.vercel.app/api";
 const DEFAULT_CAMPUS_API_BASE = "https://campus.iot-platform.io.vn/api/v1/mini-app";
+const DEFAULT_LEGACY_USER_INFO_URL =
+  "https://campus.iot-platform.io.vn/api/v1/mini-app/oauth/user-info";
 const DEFAULT_NEWGEN_API_BASE = "https://newgen.iot-platform.io.vn/api";
 
 function envString(key: string, fallback: string): string {
@@ -48,6 +50,10 @@ export function getApiBase(): string {
 
 export function getTammiExchangeUrl(): string {
   return `${getApiBase().replace(/\/+$/, "")}/exchange-tammi`;
+}
+
+export function getLegacyUserInfoUrl(): string {
+  return envString("VITE_LEGACY_USER_INFO_URL", DEFAULT_LEGACY_USER_INFO_URL);
 }
 
 export const DEFAULT_SCOPES = ["USER_NAME", "USER_PHONE_NUMBER"] as const;
