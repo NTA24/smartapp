@@ -15,6 +15,7 @@ import { ZYAPP_CAMERA_TOKEN_STORAGE_KEY } from "../lib/storageKeys";
 import { tbWsManager } from "../lib/tbWebSocket";
 
 const RESYNC_LOADING_MAX_MS = 12_000;
+const AUTH_RESUME_EVENT_SUPPRESS_MS = 1_500;
 
 /** Chuỗi nhãn hiển thị theo thứ tự UID — dùng để biết tên camera đã đổi sau resync. */
 function cameraListLabelSignature(uids: string[], devices: SmartBuildingDeviceRecord[]): string {
@@ -210,6 +211,8 @@ export function MiniAppProvider({ children }: { children: React.ReactNode }) {
   miniAppInitializedRef.current = state.miniAppInitialized;
   const resyncLabelSnapshotRef = useRef("");
   const lastIotDevicesRef = useRef<SmartBuildingDeviceRecord[]>([]);
+  const oauthRequestInFlightRef = useRef<Promise<void> | null>(null);
+  const suppressResumeRefreshUntilRef = useRef(0);
 
   useEffect(() => {
     tbWsManager.ensureConnected();
@@ -244,7 +247,12 @@ export function MiniAppProvider({ children }: { children: React.ReactNode }) {
       const camUIDs = extractCameraUIDs(info);
       const iotDevices = extractIotDevicesFromUserInfo(info);
       lastIotDevicesRef.current = iotDevices;
-      setState((s) => ({ ...s, accessToken, refreshToken, mqttToken }));
+      setState((s) => ({
+        ...s,
+        accessToken: accessToken || s.accessToken,
+        refreshToken: refreshToken || s.refreshToken,
+        mqttToken: mqttToken || s.mqttToken,
+      }));
       addLog(
         "[userinfo]",
         "response",
@@ -299,6 +307,23 @@ export function MiniAppProvider({ children }: { children: React.ReactNode }) {
     setState((s) => ({ ...s, authError: "" }));
   }, []);
 
+  const fetchAndApplyOAuthUserInfo = useCallback((): Promise<void> => {
+    if (oauthRequestInFlightRef.current) return oauthRequestInFlightRef.current;
+
+    suppressResumeRefreshUntilRef.current = Number.POSITIVE_INFINITY;
+    const request = (async () => {
+      const auth = await getAuthCode(["USER_NAME", "USER_PHONE_NUMBER"]);
+      const info = await getUserInfoByAuthCode(auth.authCode);
+      await applyUserInfoFromOAuthResponse(info);
+    })().finally(() => {
+      suppressResumeRefreshUntilRef.current = Date.now() + AUTH_RESUME_EVENT_SUPPRESS_MS;
+      oauthRequestInFlightRef.current = null;
+    });
+
+    oauthRequestInFlightRef.current = request;
+    return request;
+  }, [applyUserInfoFromOAuthResponse]);
+
   const refreshDevices = useCallback(async () => {
     if (lastIotDevicesRef.current.length > 0) {
       setDevices(lastIotDevicesRef.current);
@@ -333,13 +358,11 @@ export function MiniAppProvider({ children }: { children: React.ReactNode }) {
       return { ...s, sessionResyncLoading: true };
     });
     try {
-      const auth = await getAuthCode(["USER_NAME", "USER_PHONE_NUMBER"]);
-      const info = await getUserInfoByAuthCode(auth.authCode);
-      await applyUserInfoFromOAuthResponse(info);
+      await fetchAndApplyOAuthUserInfo();
     } catch {
       await refreshDevices();
     }
-  }, [applyUserInfoFromOAuthResponse, refreshDevices]);
+  }, [fetchAndApplyOAuthUserInfo, refreshDevices]);
 
   const refreshOAuthUserInfoRef = useRef(refreshOAuthUserInfo);
   refreshOAuthUserInfoRef.current = refreshOAuthUserInfo;
@@ -374,6 +397,8 @@ export function MiniAppProvider({ children }: { children: React.ReactNode }) {
       debounceId = window.setTimeout(() => {
         debounceId = null;
         if (!miniAppInitializedRef.current) return;
+        if (oauthRequestInFlightRef.current) return;
+        if (Date.now() < suppressResumeRefreshUntilRef.current) return;
         void refreshOAuthUserInfoRef.current();
       }, DEBOUNCE_MS);
     };
@@ -422,9 +447,7 @@ export function MiniAppProvider({ children }: { children: React.ReactNode }) {
   const requestAuthAndPhone = useCallback(async () => {
     setState((s) => ({ ...s, authLoading: true, authError: "" }));
     try {
-      const auth = await getAuthCode(["USER_NAME", "USER_PHONE_NUMBER"]);
-      const info = await getUserInfoByAuthCode(auth.authCode);
-      await applyUserInfoFromOAuthResponse(info);
+      await fetchAndApplyOAuthUserInfo();
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       setState((s) => ({ ...s, authError: msg || "Auth flow failed" }));
@@ -432,7 +455,7 @@ export function MiniAppProvider({ children }: { children: React.ReactNode }) {
     } finally {
       setState((s) => ({ ...s, authLoading: false }));
     }
-  }, [applyUserInfoFromOAuthResponse]);
+  }, [fetchAndApplyOAuthUserInfo]);
 
   const initializeMiniApp = useCallback(async (): Promise<void> => {
     await onWindVaneReady();

@@ -6,9 +6,9 @@ import {
 } from "../config";
 import { addLog } from "../debugLog";
 import {
-  clearCachedLoginJwt,
   getCachedLoginJwt,
   isJwtExpired,
+  rejectCachedLoginJwt,
   tbLogin,
 } from "./tbWsAuth";
 import {
@@ -353,6 +353,7 @@ export class TbWsManager {
     if (!token) {
       addLog("[ws]", "No valid token available — cannot connect WS");
       this.connecting = false;
+      if (this.subs.size > 0) this.scheduleReconnect();
       return;
     }
 
@@ -491,9 +492,8 @@ export class TbWsManager {
         /invalid\s+jwt|jwt\s+token|token\s+expired|unauthori[sz]ed/i.test(reason) ||
         (ev.code === 1011 && /jwt|token/i.test(reason));
       if (invalidJwt) {
-        clearCachedLoginJwt();
-        this.lastWsTokenFingerprint = "";
-        addLog("[ws]", "JWT rejected — will re-login on next connect");
+        rejectCachedLoginJwt();
+        addLog("[ws]", "JWT rejected — login retry paused for 60 seconds");
         if (this.subs.size > 0) this.scheduleReconnect();
         return;
       }

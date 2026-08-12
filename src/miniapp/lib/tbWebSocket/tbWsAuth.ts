@@ -7,6 +7,9 @@ import { addLog } from "../debugLog";
 
 let _cachedLoginJwt = "";
 let _loginInFlight: Promise<string | null> | null = null;
+let _loginBlockedUntil = 0;
+
+const LOGIN_RETRY_COOLDOWN_MS = 60_000;
 
 export function isJwtExpired(jwt: string): boolean {
   try {
@@ -22,6 +25,7 @@ export function isJwtExpired(jwt: string): boolean {
 
 export async function tbLogin(): Promise<string | null> {
   if (_loginInFlight) return _loginInFlight;
+  if (Date.now() < _loginBlockedUntil) return null;
   _loginInFlight = (async () => {
     try {
       const baseUrl = getNewgenApiBase();
@@ -60,4 +64,9 @@ export function getCachedLoginJwt(): string {
 
 export function clearCachedLoginJwt(): void {
   _cachedLoginJwt = "";
+}
+
+export function rejectCachedLoginJwt(): void {
+  _cachedLoginJwt = "";
+  _loginBlockedUntil = Date.now() + LOGIN_RETRY_COOLDOWN_MS;
 }

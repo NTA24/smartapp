@@ -82,7 +82,8 @@ export function onWindVaneReady(): Promise<void> {
 }
 
 
-const FALLBACK_SCOPES = ["auth_user"];
+const BASIC_FALLBACK_SCOPES = ["auth_user"];
+const PHONE_FALLBACK_SCOPES = ["auth_user", "auth_phone"];
 
 function errorMessage(err: unknown): string {
   if (err instanceof Error) return err.message;
@@ -109,6 +110,13 @@ async function ensurePermissions(scopes: string[]): Promise<void> {
 async function tryGetAuthCode(appId: string, scopes: string[]): Promise<{ authCode: string; scopes: string[] }> {
   const result = await apiGetAuthCode(appId, scopes);
   return { authCode: result.authCode, scopes };
+}
+
+function getFallbackScopes(scopes: string[]): string[] {
+  const requiresPhone = scopes.some((scope) =>
+    scope === "USER_PHONE_NUMBER" || scope === "auth_phone"
+  );
+  return requiresPhone ? PHONE_FALLBACK_SCOPES : BASIC_FALLBACK_SCOPES;
 }
 
 async function getAuthCodeWithRetry(
@@ -144,11 +152,14 @@ async function getAuthCodeWithRetry(
           saveLastAuthCode(second.authCode);
           return second;
         } catch {
-          const usedFallback = !scopes.includes("auth_user");
+          const fallbackScopes = getFallbackScopes(scopes);
+          const usedFallback =
+            fallbackScopes.length !== scopes.length ||
+            fallbackScopes.some((scope, index) => scope !== scopes[index]);
           if (usedFallback) {
             try {
-              await authorize("auth_user");
-              const fallback = await tryGetAuthCode(appId, FALLBACK_SCOPES);
+              await ensurePermissions(fallbackScopes);
+              const fallback = await tryGetAuthCode(appId, fallbackScopes);
               saveLastAuthCode(fallback.authCode);
               return fallback;
             } catch {
