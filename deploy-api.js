@@ -13,7 +13,7 @@ const APP_ID = process.env.APP_ID || '1512032299590111735808';
 const SPACE_ID = process.env.SPACE_ID || '1532032282325149028352';
 const CHANNEL_CODE = process.env.CHANNEL_CODE || '1611947948265195581440';
 
-const LOGIN_URL = process.env.LOGIN_URL || 'https://poc.superapp-intl.com/login';
+const LOGIN_URL = process.env.LOGIN_URL || 'https://poc.superapp-intl.com/superapp#/login?redirect=https%3A%2F%2Fpoc.superapp-intl.com%2Fsuperapp&type=login';
 const MY_USERNAME = process.env.POC_USERNAME || '';
 const MY_PASSWORD = process.env.POC_PASSWORD || '';
 

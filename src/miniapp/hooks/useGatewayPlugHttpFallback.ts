@@ -53,12 +53,18 @@ export function useGatewayPlugStateWithFallback(deviceId: string | null): {
 
   useEffect(() => {
     if (!deviceId) return;
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState === "visible" && !wsSeen.current) void refreshFromHttp();
+    }, 10_000);
     const onVis = () => {
       if (document.visibilityState !== "visible") return;
       void refreshFromHttp();
     };
     document.addEventListener("visibilitychange", onVis);
-    return () => document.removeEventListener("visibilitychange", onVis);
+    return () => {
+      window.clearInterval(intervalId);
+      document.removeEventListener("visibilitychange", onVis);
+    };
   }, [deviceId, refreshFromHttp]);
 
   let live: boolean | undefined;

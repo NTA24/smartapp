@@ -1,5 +1,4 @@
 import {
-  getNewgenSampleDevicesApiKey,
   getNewgenWsJwt,
   getNewgenWsTelemetryUrl,
   getNewgenWsUseCmdsFormat,
@@ -335,7 +334,6 @@ export class TbWsManager {
   private async resolveTokenAndConnect(): Promise<void> {
     const envJwt = getNewgenWsJwt();
     const cached = getCachedLoginJwt();
-    const apiKey = getNewgenSampleDevicesApiKey();
     const hasLoginCredentials = hasTbLoginCredentials();
 
     let token = "";
@@ -347,16 +345,14 @@ export class TbWsManager {
       const fresh = hasLoginCredentials ? await tbLogin() : null;
       if (fresh) {
         token = fresh;
-      } else if (apiKey) {
-        token = apiKey;
       }
     }
 
     if (!token) {
       this.connecting = false;
-      if (!envJwt && !apiKey && !hasLoginCredentials) {
+      if (!envJwt && !hasLoginCredentials) {
         this.wsAuthFatal = true;
-        addLog("[ws]", "WS disabled: missing JWT, TB credentials, and API key");
+        addLog("[ws]", "Legacy ThingsBoard WS disabled: no login session");
         return;
       }
       addLog("[ws]", "No valid token available: cannot connect WS");

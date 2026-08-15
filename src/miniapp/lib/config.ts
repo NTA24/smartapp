@@ -8,6 +8,8 @@ const DEFAULT_CAMPUS_API_BASE = "https://campus.iot-platform.io.vn/api/v1/mini-a
 const DEFAULT_LEGACY_USER_INFO_URL =
   "https://campus.iot-platform.io.vn/api/v1/mini-app/oauth/user-info";
 const DEFAULT_NEWGEN_API_BASE = "https://newgen.iot-platform.io.vn/api";
+const DEFAULT_NEWGEN_DEVICES_API_BASE = "https://stg-api.newgenjsc.com/devices/api/v1";
+const DEFAULT_NEWGEN_AUTH_API_BASE = "https://stg-api.newgenjsc.com/auth/api/v1";
 
 function envString(key: string, fallback: string): string {
   const raw = (import.meta.env as Record<string, unknown>)[key];
@@ -19,6 +21,14 @@ const SMARTAPP_HOSTNAME = envString("VITE_SMARTAPP_HOSTNAME", DEFAULT_SMARTAPP_H
 const PUBLIC_API_BASE = envString("VITE_PUBLIC_API_BASE", DEFAULT_PUBLIC_API_BASE);
 const CAMPUS_API_BASE = envString("VITE_CAMPUS_API_BASE", DEFAULT_CAMPUS_API_BASE);
 const NEWGEN_API_BASE = envString("VITE_NEWGEN_API_BASE", DEFAULT_NEWGEN_API_BASE);
+const NEWGEN_DEVICES_API_BASE = envString(
+  "VITE_NEWGEN_DEVICES_API_BASE",
+  DEFAULT_NEWGEN_DEVICES_API_BASE,
+);
+const NEWGEN_AUTH_API_BASE = envString(
+  "VITE_NEWGEN_AUTH_API_BASE",
+  DEFAULT_NEWGEN_AUTH_API_BASE,
+);
 
 function getAppIdFromUrl(): string {
   if (typeof window === "undefined" || !window.location.search) return "";
@@ -58,19 +68,9 @@ export function getLegacyUserInfoUrl(): string {
 
 export const DEFAULT_SCOPES = ["USER_NAME", "USER_PHONE_NUMBER"] as const;
 export const SMART_BUILDING_BASE_URL = CAMPUS_API_BASE;
-export const NEWGEN_DEVICE_WITH_CREDENTIALS_URL = `${NEWGEN_API_BASE}/device-with-credentials`;
-
-export const NEWGEN_SAMPLE_CUSTOMER_ID = "e08bac50-2dd5-11f1-818c-272cb13706a3";
-
-export function getNewgenSampleDevicesApiKey(): string {
-  const raw = (import.meta.env as Record<string, unknown>).VITE_NEWGEN_SAMPLE_DEVICES_API_KEY;
-  return String(raw ?? "").trim();
-}
 
 export function getNewgenWsJwt(): string {
-  let raw = String((import.meta.env as Record<string, unknown>).VITE_NEWGEN_WS_JWT ?? "").trim();
-  if (/^bearer\s+/i.test(raw)) raw = raw.replace(/^bearer\s+/i, "").trim();
-  return raw;
+  return "";
 }
 
 export function getNewgenCustomerDevicesUrl(
@@ -140,15 +140,23 @@ export function getNewgenWsUseCmdsFormat(): boolean {
 }
 
 export function getNewgenTbUsername(): string {
-  return String((import.meta.env as Record<string, unknown>).VITE_NEWGEN_TB_USERNAME ?? "").trim();
+  return "";
 }
 
 export function getNewgenTbPassword(): string {
-  return String((import.meta.env as Record<string, unknown>).VITE_NEWGEN_TB_PASSWORD ?? "").trim();
+  return "";
 }
 
 export function getNewgenApiBase(): string {
   return NEWGEN_API_BASE;
+}
+
+export function getNewgenDevicesApiBase(): string {
+  return NEWGEN_DEVICES_API_BASE.replace(/\/+$/, "");
+}
+
+export function getNewgenAuthApiBase(): string {
+  return NEWGEN_AUTH_API_BASE.replace(/\/+$/, "");
 }
 
 export { STORAGE_KEY_APP_ID };

@@ -9,6 +9,10 @@ import {
   type UserInfoResponse,
 } from "../../api/authentication/getUserInfoByAuthCode";
 import { getDevicesByUsername, type SmartBuildingDeviceRecord } from "../services/deviceSync";
+import {
+  configureNewgenPlatformSession,
+  configureNewgenPlatformZyToken,
+} from "../services/newgenPlatform";
 import { extractCameraToken, extractCameraUIDs, MINIAPP_DEVICES_REFRESH_EVENT } from "../utils/cameraFlow";
 import { isHomeCameraDevice, labelForCameraUid } from "../lib/homeCamera";
 import { ZYAPP_CAMERA_TOKEN_STORAGE_KEY } from "../lib/storageKeys";
@@ -116,14 +120,46 @@ function mergeDevicesByDeviceId(
   preferred: SmartBuildingDeviceRecord[],
   fallback: SmartBuildingDeviceRecord[],
 ): SmartBuildingDeviceRecord[] {
+  const keysOf = (device: SmartBuildingDeviceRecord): string[] => {
+    const additional = device.device?.additionalInfo ?? {};
+    return Array.from(new Set([
+      device.deviceId,
+      device.platformDeviceId,
+      device.externalDeviceId,
+      device.device?.id?.id,
+      additional.externalDeviceId,
+      additional.uid,
+    ].map((value) => String(value ?? "").trim()).filter(Boolean)));
+  };
   const map = new Map<string, SmartBuildingDeviceRecord>();
   for (const d of fallback) {
-    const id = String(d.deviceId ?? d.device?.id?.id ?? "").trim();
+    const id = keysOf(d)[0] ?? "";
     if (id) map.set(id, d);
   }
   for (const d of preferred) {
-    const id = String(d.deviceId ?? d.device?.id?.id ?? "").trim();
-    if (id) map.set(id, d);
+    const preferredKeys = keysOf(d);
+    const id = preferredKeys[0] ?? "";
+    if (!id) continue;
+    let matchedFallback: SmartBuildingDeviceRecord | undefined;
+    for (const [existingId, existing] of map) {
+      const overlaps = keysOf(existing).some((key) => preferredKeys.includes(key));
+      if (!overlaps) continue;
+      matchedFallback = existing;
+      map.delete(existingId);
+      break;
+    }
+    map.set(id, matchedFallback ? {
+      ...matchedFallback,
+      ...d,
+      device: d.device ? {
+        ...matchedFallback.device,
+        ...d.device,
+        additionalInfo: {
+          ...matchedFallback.device?.additionalInfo,
+          ...d.device.additionalInfo,
+        },
+      } : matchedFallback.device,
+    } : d);
   }
   return Array.from(map.values());
 }
@@ -243,6 +279,14 @@ export function MiniAppProvider({ children }: { children: React.ReactNode }) {
       const camUIDs = extractCameraUIDs(info);
       const iotDevices = extractIotDevicesFromUserInfo(info);
       lastIotDevicesRef.current = iotDevices;
+      configureNewgenPlatformSession(accessToken, refreshToken, (tokens) => {
+        setState((current) => ({
+          ...current,
+          accessToken: tokens.accessToken,
+          refreshToken: tokens.refreshToken || current.refreshToken,
+        }));
+      });
+      configureNewgenPlatformZyToken(camToken);
       setState((s) => ({
         ...s,
         accessToken: accessToken || s.accessToken,
@@ -276,13 +320,13 @@ export function MiniAppProvider({ children }: { children: React.ReactNode }) {
 
       if (phone) {
         setUserPhone(phone);
-        // Khi user-info đã trả iotDevices thì coi đó là nguồn sự thật cho danh sách thiết bị.
-        if (iotDevices.length > 0) return;
         try {
           const devices = await getDevicesByUsername(phone);
           const merged = mergeDevicesByDeviceId(devices, iotDevices);
           setDevices(merged);
-        } catch {}
+        } catch {
+          if (iotDevices.length > 0) setDevices(iotDevices);
+        }
       }
       const P = window.MiniAppPermissions;
       if (P?.getSetting) {
@@ -331,10 +375,6 @@ export function MiniAppProvider({ children }: { children: React.ReactNode }) {
   }, [applyUserInfoFromOAuthResponse]);
 
   const refreshDevices = useCallback(async () => {
-    if (lastIotDevicesRef.current.length > 0) {
-      setDevices(lastIotDevicesRef.current);
-      return;
-    }
     const username = String(window.MINIAPP_USER_PHONE ?? state.userPhone ?? "").trim();
     if (!username) {
       setDevices(lastIotDevicesRef.current);

@@ -1,5 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { fetchDeviceSwitchChannelStates } from "../../services/deviceSync";
+import {
+  fetchDeviceLedStripStates,
+  fetchDeviceSirenStates,
+  fetchDeviceSwitchChannelStates,
+} from "../../services/deviceSync";
+import { hasNewgenPlatformSession } from "../../services/newgenPlatform";
 import {
   type BatchAttrCb,
   DOOR_TS_KEY,
@@ -36,6 +41,10 @@ function useTbWs(
 
   useEffect(() => {
     if (!deviceId) {
+      setState({ value: undefined, rev: 0 });
+      return;
+    }
+    if (hasNewgenPlatformSession()) {
       setState({ value: undefined, rev: 0 });
       return;
     }
@@ -98,6 +107,23 @@ export function useSmartSwitchStatesWs(deviceId: string | null): {
     }
     setChs(emptySwitchTuple());
     setWsRev(0);
+
+    if (hasNewgenPlatformSession()) {
+      let cancelled = false;
+      const pull = () => {
+        void fetchDeviceSwitchChannelStates(deviceId.trim()).then((tuple) => {
+          if (cancelled || !tuple) return;
+          setChs(tuple);
+          setWsRev((value) => value + 1);
+        });
+      };
+      pull();
+      const intervalId = window.setInterval(pull, 8_000);
+      return () => {
+        cancelled = true;
+        window.clearInterval(intervalId);
+      };
+    }
 
     const noop: BatchAttrCb = () => {};
     const unsubState = tbWsManager.subscribeBatch(
@@ -217,6 +243,28 @@ export function useSirenStatesWs(deviceId: string | null): {
     }
     setMap({});
     setRev(0);
+    if (hasNewgenPlatformSession()) {
+      let cancelled = false;
+      const pull = () => {
+        void fetchDeviceSirenStates(deviceId).then((state) => {
+          if (cancelled || !state) return;
+          setMap({
+            siren_state: state.on,
+            siren_tune: state.tune,
+            siren_volume: state.volume,
+            siren_duration_sec: state.durationSec,
+            siren_level_raw: state.levelRaw,
+          });
+          setRev((value) => value + 1);
+        });
+      };
+      pull();
+      const intervalId = window.setInterval(pull, 8_000);
+      return () => {
+        cancelled = true;
+        window.clearInterval(intervalId);
+      };
+    }
     return tbWsManager.subscribeBatch(deviceId, [...SIREN_WS_KEYS], "attr_any", (key, value) => {
       setMap((m) => ({ ...m, [key]: value }));
       setRev((r) => r + 1);
@@ -267,12 +315,36 @@ export function useLedStripStatesWs(deviceId: string | null): {
   colorTemp: number | undefined;
   wsRev: number;
 } {
+  const [platformState, setPlatformState] = useState<{ lightOn?: boolean; colorTemp?: number; rev: number }>({ rev: 0 });
   // Theo log ThingsBoard: subscribe ATTRIBUTES với scope null => attr_any.
   const { value: rawLight, rev: r1 } = useTbWs(deviceId, LED_STATE_LIGHT_KEY, "attr_any");
   const { value: rawTemp, rev: r2 } = useTbWs(deviceId, LED_COLOR_TEMP_KEY, "attr_any");
+  useEffect(() => {
+    if (!deviceId || !hasNewgenPlatformSession()) {
+      setPlatformState({ rev: 0 });
+      return;
+    }
+    let cancelled = false;
+    const pull = () => {
+      void fetchDeviceLedStripStates(deviceId).then((state) => {
+        if (cancelled || !state) return;
+        setPlatformState((current) => ({
+          lightOn: state.lightOn,
+          colorTemp: state.colorTemp,
+          rev: current.rev + 1,
+        }));
+      });
+    };
+    pull();
+    const intervalId = window.setInterval(pull, 8_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [deviceId]);
   return {
-    lightOn: parseLedLightState(rawLight),
-    colorTemp: parseLedColorTemp(rawTemp),
-    wsRev: r1 + r2,
+    lightOn: platformState.lightOn ?? parseLedLightState(rawLight),
+    colorTemp: platformState.colorTemp ?? parseLedColorTemp(rawTemp),
+    wsRev: platformState.rev + r1 + r2,
   };
 }

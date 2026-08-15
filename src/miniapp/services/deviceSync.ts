@@ -1,27 +1,25 @@
 import {
-  getNewgenCustomerDevicesUrl,
   getNewgenDeviceAttributeValuesUrl,
   getNewgenDeviceClientScopeTelemetryUrl,
   getNewgenDeviceSharedScopeTelemetryUrl,
   getNewgenDeviceTimeseriesUrl,
-  getNewgenSampleDevicesApiKey,
   getNewgenWsJwt,
-  NEWGEN_SAMPLE_CUSTOMER_ID,
-  NEWGEN_DEVICE_WITH_CREDENTIALS_URL,
   SMART_BUILDING_BASE_URL,
 } from "../lib/config";
 import { addLog } from "../lib/debugLog";
 import { getCachedLoginJwt, isJwtExpired, tbLogin } from "../lib/tbWebSocket/tbWsAuth";
+import {
+  createNewgenRoomDevice,
+  fetchNewgenDeviceState,
+  fetchNewgenUserDevices,
+  hasNewgenPlatformSession,
+  readNewgenStateValue,
+  sendNewgenCapabilityCommand,
+  type NewgenPlatformDevice,
+} from "./newgenPlatform";
 
 
 function getNewgenTelemetryReadHeaders(): Record<string, string> | null {
-  const apiKey = getNewgenSampleDevicesApiKey();
-  if (apiKey) {
-    return {
-      Accept: "application/json",
-      "X-Authorization": `ApiKey ${apiKey}`,
-    };
-  }
   const jwt = getNewgenWsJwt();
   if (jwt) {
     return {
@@ -39,10 +37,6 @@ const JSON_POST_HEADERS_BASE = {
 
 
 async function getNewgenSharedScopeWriteHeaders(): Promise<Record<string, string> | null> {
-  const apiKey = getNewgenSampleDevicesApiKey();
-  if (apiKey) {
-    return { ...JSON_POST_HEADERS_BASE, "X-Authorization": `ApiKey ${apiKey}` };
-  }
   const jwt = getNewgenWsJwt();
   if (jwt && !isJwtExpired(jwt)) {
     return { ...JSON_POST_HEADERS_BASE, "X-Authorization": `Bearer ${jwt}` };
@@ -91,7 +85,59 @@ export interface SmartBuildingDeviceRecord {
   storedAt?: string;
   username?: string;
   fenceChannel?: 1 | 2;
+  platformDeviceId?: string;
+  externalDeviceId?: string;
+  roomId?: string;
+  provider?: string;
+  model?: string;
   [key: string]: unknown;
+}
+
+function platformDeviceToSmartBuilding(device: NewgenPlatformDevice): SmartBuildingDeviceRecord {
+  const label = String(device.raw.label ?? device.name ?? "").trim();
+  return {
+    deviceId: device.id,
+    platformDeviceId: device.id,
+    externalDeviceId: device.externalId ?? device.uid,
+    deviceType: device.type,
+    name: device.name,
+    label,
+    roomId: device.roomId,
+    provider: device.provider,
+    model: device.model,
+    online: device.online,
+    status: device.status,
+    device: {
+      id: { id: device.id, entityType: "DEVICE" },
+      name: device.name,
+      type: device.type,
+      label,
+      additionalInfo: {
+        platformDeviceId: device.id,
+        externalDeviceId: device.externalId,
+        uid: device.uid,
+        provider: device.provider,
+        model: device.model,
+        roomId: device.roomId,
+      },
+    },
+    newgen: device.raw,
+  };
+}
+
+function parseBooleanState(value: unknown): boolean | undefined {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (["on", "true", "1", "open", "opened", "alarm", "detected", "active"].includes(normalized)) return true;
+  if (["off", "false", "0", "close", "closed", "safe", "normal", "inactive"].includes(normalized)) return false;
+  return undefined;
+}
+
+async function fetchPlatformBoolean(deviceId: string, keys: string[]): Promise<boolean | null> {
+  if (!hasNewgenPlatformSession()) return null;
+  const state = await fetchNewgenDeviceState(deviceId);
+  return parseBooleanState(readNewgenStateValue(state, keys)) ?? null;
 }
 
 function asRecord(data: unknown): Record<string, unknown> | null {
@@ -107,52 +153,15 @@ function readMessage(data: unknown): string {
   return "";
 }
 
-function parseTbDevice(data: unknown): TbDevice | null {
-  const record = asRecord(data);
-  if (!record) return null;
-  const id = asRecord(record.id);
-  if (!id || typeof id.id !== "string" || typeof id.entityType !== "string") return null;
-  return {
-    ...(record as TbDevice),
-    id: { id: id.id, entityType: id.entityType },
-  };
-}
-
 function parseSmartBuildingDeviceRecord(data: unknown): SmartBuildingDeviceRecord | null {
   const record = asRecord(data);
   if (!record) return null;
   return record as SmartBuildingDeviceRecord;
 }
 
-function getNewGenApiKey(): string {
-  const env = typeof import.meta !== "undefined"
-    ? (import.meta.env as Record<string, unknown>).VITE_NEWGEN_API_KEY
-    : undefined;
-  return String(env ?? "").trim();
-}
-
 export async function createDeviceInNewGen(body: Record<string, unknown>): Promise<TbDevice> {
-  const apiKey = getNewGenApiKey();
-  if (!apiKey) {
-    throw new Error("Missing VITE_NEWGEN_API_KEY");
-  }
-
-  const res = await fetch(NEWGEN_DEVICE_WITH_CREDENTIALS_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Authorization": `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(body),
-  });
-
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new Error(readMessage(data) || `NewGen HTTP ${res.status}`);
-  }
-  const parsed = parseTbDevice(data);
-  if (!parsed) throw new Error("Invalid NewGen device response");
-  return parsed;
+  void body;
+  throw new Error("Legacy device creation is disabled; sign in to use NewGen Devices API");
 }
 
 export async function saveDeviceToSmartBuilding(username: string, device: TbDevice): Promise<SmartBuildingDeviceRecord> {
@@ -187,63 +196,15 @@ export async function fetchNewgenCustomerDevices(
   customerId: string,
   opts: { pageSize?: number; page?: number } = {},
 ): Promise<NewgenCustomerDevicesPageResult> {
-  const apiKey = getNewgenSampleDevicesApiKey();
-  if (!apiKey) {
-    throw new Error("Thiếu VITE_NEWGEN_SAMPLE_DEVICES_API_KEY trong .env");
-  }
-  const pageSize = opts.pageSize ?? NEWGEN_SAMPLE_PAGE_SIZE;
-  const page = opts.page ?? 0;
-  const url = getNewgenCustomerDevicesUrl(customerId, { pageSize, page });
-  const res = await fetch(url, {
-    method: "GET",
-    headers: {
-      Accept: "application/json",
-      "X-Authorization": `ApiKey ${apiKey}`,
-    },
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new Error(readMessage(data) || `NewGen customer devices HTTP ${res.status}`);
-  }
-  const record = asRecord(data);
-  const arr = record?.data;
-  const devices = !Array.isArray(arr)
-    ? []
-    : arr
-        .map((item) => {
-          const dev = parseTbDevice(item);
-          if (!dev) return null;
-          const rec: SmartBuildingDeviceRecord = {
-            device: dev,
-            deviceId: dev.id.id,
-            deviceType: dev.type,
-            label: dev.label,
-            name: dev.name,
-          };
-          return rec;
-        })
-        .filter((item): item is SmartBuildingDeviceRecord => item !== null);
-
-  const totalPages = typeof record?.totalPages === "number" ? record.totalPages : 0;
-  const totalElements = typeof record?.totalElements === "number" ? record.totalElements : 0;
-  const hasNext = record?.hasNext === true;
-
-  return {
-    devices,
-    page,
-    pageSize,
-    totalPages,
-    totalElements,
-    hasNext,
-  };
+  void customerId;
+  void opts;
+  throw new Error("Legacy sample-device API is disabled");
 }
 
 
 export async function fetchNewgenCustomerSampleDevices(page = 0): Promise<NewgenCustomerDevicesPageResult> {
-  return fetchNewgenCustomerDevices(NEWGEN_SAMPLE_CUSTOMER_ID, {
-    pageSize: NEWGEN_SAMPLE_PAGE_SIZE,
-    page,
-  });
+  void page;
+  throw new Error("Legacy sample-device API is disabled");
 }
 
 const ENV_DEVICE_ID_LIST_CACHE = new Map<string, string[]>();
@@ -460,9 +421,17 @@ export async function postDeviceSirenAttributes(
   deviceId: string,
   body: Record<string, string | number>,
 ): Promise<void> {
+  if (hasNewgenPlatformSession()) {
+    for (const [rawKey, rawValue] of Object.entries(body)) {
+      const key = rawKey.startsWith("cmd_") ? rawKey : `cmd_${rawKey}`;
+      const candidates = [key, rawKey, key.replace(/^cmd_/, "")];
+      await sendNewgenCapabilityCommand(deviceId, candidates, rawValue);
+    }
+    return;
+  }
   const headers = await getNewgenSharedScopeWriteHeaders();
   if (!headers) {
-    throw new Error("Cần VITE_NEWGEN_SAMPLE_DEVICES_API_KEY hoặc VITE_NEWGEN_WS_JWT để điều khiển siren.");
+    throw new Error("Chưa có phiên đăng nhập NewGen để điều khiển siren.");
   }
   const id = deviceId.trim();
   if (!id) return;
@@ -506,6 +475,42 @@ export async function postDeviceSirenAttributes(
   if (!res.ok) {
     const msg = readMessage(data) || `HTTP ${res.status}`;
     throw new Error(msg || "Siren attribute POST failed");
+  }
+}
+
+export interface DeviceSirenState {
+  on?: boolean;
+  tune?: number;
+  volume?: number;
+  durationSec?: number;
+  levelRaw?: number;
+}
+
+function parseFiniteNumber(value: unknown): number | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  const parsed = typeof value === "number" ? value : Number(String(value).trim());
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+export async function fetchDeviceSirenStates(deviceId: string): Promise<DeviceSirenState | null> {
+  if (!hasNewgenPlatformSession()) return null;
+  try {
+    const state = await fetchNewgenDeviceState(deviceId);
+    const result: DeviceSirenState = {
+      on: parseBooleanState(readNewgenStateValue(state, ["siren_state", "cmd_siren_state", "siren", "alarm"])),
+      tune: parseFiniteNumber(readNewgenStateValue(state, ["siren_tune", "cmd_siren_tune", "tune"])),
+      volume: parseFiniteNumber(readNewgenStateValue(state, ["siren_volume", "cmd_siren_volume", "volume"])),
+      durationSec: parseFiniteNumber(readNewgenStateValue(state, [
+        "siren_duration_sec",
+        "cmd_siren_duration_sec",
+        "duration_sec",
+        "duration",
+      ])),
+      levelRaw: parseFiniteNumber(readNewgenStateValue(state, ["siren_level_raw", "level_raw", "level"])),
+    };
+    return Object.values(result).every((value) => value === undefined) ? null : result;
+  } catch {
+    return null;
   }
 }
 
@@ -584,6 +589,18 @@ function latestTimeseriesValue(
 
 
 export async function fetchDeviceSmokeDetectedLatest(deviceId: string): Promise<boolean | null> {
+  if (hasNewgenPlatformSession()) {
+    try {
+      return await fetchPlatformBoolean(deviceId, [
+        SMOKE_DETECTED_TELEMETRY_KEY,
+        SMOKE_DETECTED_TELEMETRY_KEY_ALT,
+        "smoke",
+        "alarm",
+      ]);
+    } catch {
+      return null;
+    }
+  }
   const headers = getNewgenTelemetryReadHeaders();
   if (!headers) return null;
   const endTs = Date.now();
@@ -617,6 +634,19 @@ export async function fetchDeviceSmokeDetectedLatest(deviceId: string): Promise<
 
 
 export async function fetchDeviceHumanSensorLatest(deviceId: string): Promise<boolean | null> {
+  if (hasNewgenPlatformSession()) {
+    try {
+      return await fetchPlatformBoolean(deviceId, [
+        HUMAN_SENSOR_TELEMETRY_KEY,
+        HUMAN_SENSOR_TELEMETRY_KEY_ALT,
+        "presence",
+        "occupancy",
+        "motion",
+      ]);
+    } catch {
+      return null;
+    }
+  }
   const headers = getNewgenTelemetryReadHeaders();
   if (!headers) return null;
   const endTs = Date.now();
@@ -655,6 +685,19 @@ function parseDoorSensorOpenValue(data: unknown): boolean | null {
 }
 
 export async function fetchDeviceDoorSensorLatest(deviceId: string): Promise<boolean | null> {
+  if (hasNewgenPlatformSession()) {
+    try {
+      return await fetchPlatformBoolean(deviceId, [
+        DOOR_SENSOR_TELEMETRY_KEY,
+        DOOR_SENSOR_TELEMETRY_KEY_ALT,
+        "door",
+        "open",
+        "contact",
+      ]);
+    } catch {
+      return null;
+    }
+  }
   const headers = getNewgenTelemetryReadHeaders();
   if (!headers) {
     addLog("[door_http]", deviceId, "no-headers");
@@ -707,6 +750,14 @@ function parseFenceSensorAlarmValue(data: unknown): boolean | null {
 }
 
 export async function fetchDeviceFenceSensorLatest(deviceId: string, channel: 1 | 2 = 1): Promise<boolean | null> {
+  if (hasNewgenPlatformSession()) {
+    const key = channel === 2 ? FENCE2_SENSOR_TELEMETRY_KEY : FENCE1_SENSOR_TELEMETRY_KEY;
+    try {
+      return await fetchPlatformBoolean(deviceId, [key, `fence_${channel}`, `channel_${channel}`]);
+    } catch {
+      return null;
+    }
+  }
   const headers = getNewgenTelemetryReadHeaders();
   if (!headers) return null;
   const endTs = Date.now();
@@ -769,6 +820,18 @@ function attributesResponseToMap(data: unknown): Record<string, unknown> {
 export async function fetchDeviceSwitchChannelStates(
   deviceId: string,
 ): Promise<[boolean, boolean, boolean, boolean] | null> {
+  if (hasNewgenPlatformSession()) {
+    try {
+      const state = await fetchNewgenDeviceState(deviceId);
+      const values = SMART_SWITCH_STATE_KEYS.map((key, index) => parseBooleanState(
+        readNewgenStateValue(state, [key, SHARED_SCOPE_CMD_KEYS[index], `switch_${index + 1}`, `sw${index + 1}`]),
+      ));
+      if (values.every((value) => value === undefined)) return null;
+      return [values[0] ?? false, values[1] ?? false, values[2] ?? false, values[3] ?? false];
+    } catch {
+      return null;
+    }
+  }
   const headers = getNewgenTelemetryReadHeaders();
   if (!headers) return null;
   const id = deviceId.trim();
@@ -821,6 +884,18 @@ const GATEWAY_PLUG_CMD_SOCKET_KEY = "cmd-socket";
 
 
 export async function fetchDeviceGatewayPlugState(deviceId: string): Promise<boolean | null> {
+  if (hasNewgenPlatformSession()) {
+    try {
+      return await fetchPlatformBoolean(deviceId, [
+        GATEWAY_PLUG_STATE_KEY,
+        GATEWAY_PLUG_CMD_SOCKET_KEY,
+        "socket",
+        "power",
+      ]);
+    } catch {
+      return null;
+    }
+  }
   const headers = getNewgenTelemetryReadHeaders();
   if (!headers) return null;
   const id = deviceId.trim();
@@ -883,6 +958,27 @@ function parseLedColorTempAttr(v: unknown): number | undefined {
 export async function fetchDeviceLedStripStates(
   deviceId: string,
 ): Promise<{ lightOn: boolean; colorTemp: number } | null> {
+  if (hasNewgenPlatformSession()) {
+    try {
+      const state = await fetchNewgenDeviceState(deviceId);
+      const light = parseLedLightAttr(readNewgenStateValue(state, [
+        LED_STATE_LIGHT_ATTR_KEY,
+        LED_CMD_LIGHT_KEY,
+        "light",
+        "power",
+      ]));
+      const temp = parseLedColorTempAttr(readNewgenStateValue(state, [
+        LED_COLOR_TEMP_ATTR_KEY,
+        LED_CMD_COLOR_TEMP_KEY,
+        "color_temperature",
+        "color_temp",
+      ]));
+      if (light === undefined && temp === undefined) return null;
+      return { lightOn: light ?? false, colorTemp: temp ?? 50 };
+    } catch {
+      return null;
+    }
+  }
   const headers = getNewgenTelemetryReadHeaders();
   if (!headers) return null;
   const id = deviceId.trim();
@@ -929,9 +1025,13 @@ export async function fetchDeviceLedStripStates(
 
 
 export async function postDeviceSharedScopePower(deviceId: string, powerOn: boolean): Promise<void> {
+  if (hasNewgenPlatformSession()) {
+    await sendNewgenCapabilityCommand(deviceId, ["power", "switch", "on_off", "cmd-power"], powerOn ? "on" : "off");
+    return;
+  }
   const headers = await getNewgenSharedScopeWriteHeaders();
   if (!headers) {
-    throw new Error("Cần VITE_NEWGEN_SAMPLE_DEVICES_API_KEY hoặc VITE_NEWGEN_WS_JWT để điều khiển thiết bị.");
+    throw new Error("Chưa có phiên đăng nhập NewGen để điều khiển thiết bị.");
   }
   const url = getNewgenDeviceSharedScopeTelemetryUrl(deviceId);
   const body = { power: powerOn ? "on" : "off" };
@@ -952,9 +1052,18 @@ export async function postDeviceSharedScopeSwitchChannel(
   channel: SmartSwitchChannel,
   on: boolean,
 ): Promise<void> {
+  if (hasNewgenPlatformSession()) {
+    const key = SHARED_SCOPE_CMD_KEYS[channel - 1];
+    await sendNewgenCapabilityCommand(
+      deviceId,
+      [key, `switch_${channel}`, `switch${channel}`, `sw${channel}`],
+      on ? "on" : "off",
+    );
+    return;
+  }
   const headers = await getNewgenSharedScopeWriteHeaders();
   if (!headers) {
-    throw new Error("Cần VITE_NEWGEN_SAMPLE_DEVICES_API_KEY hoặc VITE_NEWGEN_WS_JWT để điều khiển thiết bị.");
+    throw new Error("Chưa có phiên đăng nhập NewGen để điều khiển thiết bị.");
   }
   const url = getNewgenDeviceSharedScopeTelemetryUrl(deviceId);
   const key = SHARED_SCOPE_CMD_KEYS[channel - 1];
@@ -975,9 +1084,17 @@ export async function postDeviceSharedScopeSwitchChannel(
 
 
 export async function postDeviceClientScopeStatePlug(deviceId: string, on: boolean): Promise<void> {
+  if (hasNewgenPlatformSession()) {
+    await sendNewgenCapabilityCommand(
+      deviceId,
+      [GATEWAY_PLUG_CMD_SOCKET_KEY, "socket", "power", GATEWAY_PLUG_STATE_KEY],
+      on ? "on" : "off",
+    );
+    return;
+  }
   const headers = await getNewgenSharedScopeWriteHeaders();
   if (!headers) {
-    throw new Error("Cần VITE_NEWGEN_SAMPLE_DEVICES_API_KEY hoặc VITE_NEWGEN_WS_JWT để điều khiển đèn hành lang.");
+    throw new Error("Chưa có phiên đăng nhập NewGen để điều khiển đèn hành lang.");
   }
   const url = getNewgenDeviceClientScopeTelemetryUrl(deviceId);
   const body: Record<string, string> = { [GATEWAY_PLUG_STATE_KEY]: on ? "on" : "off" };
@@ -994,9 +1111,17 @@ export async function postDeviceClientScopeStatePlug(deviceId: string, on: boole
 
 
 export async function postDeviceSharedScopeSocketPower(deviceId: string, on: boolean): Promise<void> {
+  if (hasNewgenPlatformSession()) {
+    await sendNewgenCapabilityCommand(
+      deviceId,
+      [GATEWAY_PLUG_CMD_SOCKET_KEY, "socket", "power", GATEWAY_PLUG_STATE_KEY],
+      on ? "on" : "off",
+    );
+    return;
+  }
   const headers = await getNewgenSharedScopeWriteHeaders();
   if (!headers) {
-    throw new Error("Cần VITE_NEWGEN_SAMPLE_DEVICES_API_KEY hoặc VITE_NEWGEN_WS_JWT để điều khiển gateway / đèn hành lang.");
+    throw new Error("Chưa có phiên đăng nhập NewGen để điều khiển gateway / đèn hành lang.");
   }
   const url = getNewgenDeviceSharedScopeTelemetryUrl(deviceId);
   const body = { "cmd-socket": on ? "on" : "off" };
@@ -1023,9 +1148,17 @@ export async function sendGatewayPlugHallwayControl(deviceId: string | null, on:
 
 
 export async function postDeviceSharedScopeLedLight(deviceId: string, on: boolean): Promise<void> {
+  if (hasNewgenPlatformSession()) {
+    await sendNewgenCapabilityCommand(
+      deviceId,
+      [LED_CMD_LIGHT_KEY, "light", "power", LED_STATE_LIGHT_ATTR_KEY],
+      on ? "on" : "off",
+    );
+    return;
+  }
   const headers = await getNewgenSharedScopeWriteHeaders();
   if (!headers) {
-    throw new Error("Cần VITE_NEWGEN_SAMPLE_DEVICES_API_KEY hoặc VITE_NEWGEN_WS_JWT để điều khiển LED.");
+    throw new Error("Chưa có phiên đăng nhập NewGen để điều khiển LED.");
   }
   const url = getNewgenDeviceSharedScopeTelemetryUrl(deviceId);
   const body = { "cmd-light": on ? "on" : "off" };
@@ -1042,9 +1175,18 @@ export async function postDeviceSharedScopeLedLight(deviceId: string, on: boolea
 
 
 export async function postDeviceSharedScopeLedColorTemp(deviceId: string, value: number): Promise<void> {
+  if (hasNewgenPlatformSession()) {
+    const normalized = Math.max(0, Math.min(100, Math.round(Number(value))));
+    await sendNewgenCapabilityCommand(
+      deviceId,
+      [LED_CMD_COLOR_TEMP_KEY, "color_temperature", "color_temp", LED_COLOR_TEMP_ATTR_KEY],
+      normalized,
+    );
+    return;
+  }
   const headers = await getNewgenSharedScopeWriteHeaders();
   if (!headers) {
-    throw new Error("Cần VITE_NEWGEN_SAMPLE_DEVICES_API_KEY hoặc VITE_NEWGEN_WS_JWT để điều khiển LED.");
+    throw new Error("Chưa có phiên đăng nhập NewGen để điều khiển LED.");
   }
   const v = Math.max(0, Math.min(100, Math.round(Number(value))));
   const url = getNewgenDeviceSharedScopeTelemetryUrl(deviceId);
@@ -1062,24 +1204,7 @@ export async function postDeviceSharedScopeLedColorTemp(deviceId: string, value:
 
 
 async function fetchAllNewgenDevices(): Promise<SmartBuildingDeviceRecord[]> {
-  const apiKey = getNewgenSampleDevicesApiKey();
-  if (!apiKey) return [];
-  const all: SmartBuildingDeviceRecord[] = [];
-  let page = 0;
-  try {
-    while (true) {
-      const result = await fetchNewgenCustomerDevices(NEWGEN_SAMPLE_CUSTOMER_ID, {
-        pageSize: 100,
-        page,
-      });
-      all.push(...result.devices);
-      if (!result.hasNext) break;
-      page++;
-    }
-  } catch {
-    /* bỏ qua */
-  }
-  return all;
+  return [];
 }
 
 
@@ -1134,6 +1259,10 @@ export async function fetchSmartHomeDevicesFromNewgen(): Promise<SmartBuildingDe
 }
 
 export async function getDevicesByUsername(username: string): Promise<SmartBuildingDeviceRecord[]> {
+  if (hasNewgenPlatformSession()) {
+    const devices = await fetchNewgenUserDevices(true);
+    return devices.map(platformDeviceToSmartBuilding);
+  }
   const bust = `_=${Date.now()}`;
   const url = `${SMART_BUILDING_BASE_URL}/devices/by-username?username=${encodeURIComponent(username)}&${bust}`;
 
@@ -1170,6 +1299,10 @@ export async function createAndStoreDevice(
   username: string,
   newGenRequestBody: Record<string, unknown>,
 ): Promise<SmartBuildingDeviceRecord> {
+  if (hasNewgenPlatformSession()) {
+    const created = await createNewgenRoomDevice(newGenRequestBody);
+    return platformDeviceToSmartBuilding(created);
+  }
   const created = await createDeviceInNewGen(newGenRequestBody);
   return saveDeviceToSmartBuilding(username, created);
 }

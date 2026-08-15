@@ -1,9 +1,10 @@
-import React, { useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Typography } from "antd";
 import { Link, useNavigate } from "react-router-dom";
 import { BulbOutlined, FireOutlined, LeftOutlined, ThunderboltOutlined } from "@ant-design/icons";
 import { createAndStoreDevice } from "../services/deviceSync";
 import { useMiniApp } from "../context/MiniAppContext";
+import { fetchNewgenRooms, type NewgenPlatformRoom } from "../services/newgenPlatform";
 
 type DeviceTemplate = {
   key: string;
@@ -33,6 +34,22 @@ export const AddDevicePage: React.FC = () => {
   const [submitting, setSubmitting] = useState(false);
   const [errorText, setErrorText] = useState("");
   const [successText, setSuccessText] = useState("");
+  const [rooms, setRooms] = useState<NewgenPlatformRoom[]>([]);
+  const [roomId, setRoomId] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchNewgenRooms()
+      .then((items) => {
+        if (cancelled) return;
+        setRooms(items);
+        setRoomId((current) => current || items[0]?.id || "");
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const username = useMemo(() => {
     const raw = String(userPhone || "").trim();
@@ -50,8 +67,9 @@ export const AddDevicePage: React.FC = () => {
       name: (deviceSerial.trim() || `DEVICE_${Date.now()}`).toUpperCase(),
       type: selectedTemplate.type,
       label: `${selectedTemplate.labelPrefix}${deviceSerial.trim() ? ` - ${deviceSerial.trim().toUpperCase()}` : ""}`,
+      room_id: roomId,
     }),
-    [deviceSerial, selectedTemplate],
+    [deviceSerial, roomId, selectedTemplate],
   );
 
   const applyTemplate = (tpl: DeviceTemplate) => {
@@ -69,6 +87,10 @@ export const AddDevicePage: React.FC = () => {
     }
     if (!payload.name || !payload.type) {
       setErrorText("Thiếu thông tin thiết bị.");
+      return;
+    }
+    if (!roomId) {
+      setErrorText("Tài khoản chưa có phòng để thêm thiết bị.");
       return;
     }
 
@@ -190,6 +212,24 @@ export const AddDevicePage: React.FC = () => {
           </div>
 
           <div className="add-device-page__serial-group">
+            <label className="add-device-page__serial-label">Phòng</label>
+            <select
+              value={roomId}
+              onChange={(event) => setRoomId(event.target.value)}
+              className="add-device-page__serial-input"
+              disabled={rooms.length === 0}
+            >
+              {rooms.length === 0 ? (
+                <option value="">Tài khoản chưa có phòng</option>
+              ) : rooms.map((room) => (
+                <option key={room.id} value={room.id}>
+                  {room.apartmentName ? `${room.apartmentName} — ` : ""}{room.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="add-device-page__serial-group">
             <label className="add-device-page__serial-label">Serial / Mã thiết bị</label>
             <input
               value={deviceSerial}
@@ -205,7 +245,7 @@ export const AddDevicePage: React.FC = () => {
           <div className="add-device-page__actions">
             <button
               type="submit"
-              disabled={submitting}
+              disabled={submitting || !roomId}
               className="add-device-page__submit-btn"
             >
               {submitting ? "Đang thêm thiết bị..." : "Thêm"}
